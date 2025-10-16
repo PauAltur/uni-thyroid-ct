@@ -1,2 +1,5 @@
 # venv folders
 .venv/
+
+# hugging face token
+hf_token.txt
