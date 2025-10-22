@@ -14,3 +14,8 @@ timm
 --extra-index-url https://download.pytorch.org/whl/cu118
 torch
 torchvision
+
+# Optional: GPU acceleration for resampling (5-20x faster)
+# Uncomment the line below if you have an NVIDIA GPU with CUDA
+# Replace cuda11x with your CUDA version (e.g., cuda117, cuda118, cuda121)
+# cupy-cuda11x

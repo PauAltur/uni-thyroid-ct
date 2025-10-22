@@ -7,13 +7,19 @@ Run with: pytest tests/test_preprocessing.py -v
 import pytest
 import numpy as np
 import warnings
+import importlib.util
 from src.preprocessing import (
     normalize_volume_zscore,
     normalize_volume_zscore_inplace,
     normalize_batch_zscore,
     resample_volume,
+    resample_volume_gpu,
     extract_patches,
+    grayscale_to_rgb,
 )
+
+# Check if CuPy is available
+HAS_CUPY = importlib.util.find_spec("cupy") is not None
 
 
 class TestNormalizeVolumeZscore:
@@ -635,6 +641,183 @@ class TestResampleVolume:
         assert resampled_size_mb < volume_size_mb * 3  # Some margin for safety
 
 
+@pytest.mark.skipif(not HAS_CUPY, reason="CuPy not installed or GPU not available")
+class TestResampleVolumeGPU:
+    """Tests for GPU-accelerated resample_volume_gpu function."""
+
+    def test_basic_resampling_isotropic_upsampling(self):
+        """Test GPU upsampling from anisotropic to isotropic spacing."""
+        volume = np.random.randn(50, 100, 100).astype(np.float32)
+        original_spacing = (2.0, 1.0, 1.0)
+        target_spacing = (1.0, 1.0, 1.0)
+
+        resampled = resample_volume_gpu(volume, original_spacing, target_spacing)
+
+        expected_shape = (100, 100, 100)
+        assert resampled.shape == expected_shape
+
+    def test_basic_resampling_downsampling(self):
+        """Test GPU downsampling to lower resolution."""
+        volume = np.random.randn(100, 200, 200).astype(np.float32)
+        original_spacing = (1.0, 1.0, 1.0)
+        target_spacing = (2.0, 2.0, 2.0)
+
+        resampled = resample_volume_gpu(volume, original_spacing, target_spacing)
+
+        expected_shape = (50, 100, 100)
+        assert resampled.shape == expected_shape
+
+    def test_output_dtype_preservation(self):
+        """Test that GPU output dtype matches input dtype."""
+        for dtype in [np.float32, np.float64]:
+            volume = np.random.randn(20, 50, 50).astype(dtype)
+            original_spacing = (2.0, 1.0, 1.0)
+            target_spacing = (1.0, 1.0, 1.0)
+
+            resampled = resample_volume_gpu(volume, original_spacing, target_spacing)
+            assert resampled.dtype == dtype
+
+    def test_results_match_cpu_version(self):
+        """Test that GPU results closely match CPU version."""
+        volume = np.random.randn(30, 60, 60).astype(np.float32)
+        original_spacing = (2.0, 1.0, 1.0)
+        target_spacing = (1.0, 1.0, 1.0)
+
+        # CPU version
+        resampled_cpu = resample_volume(volume, original_spacing, target_spacing)
+
+        # GPU version
+        resampled_gpu = resample_volume_gpu(volume, original_spacing, target_spacing)
+
+        # Shapes should match exactly
+        assert resampled_cpu.shape == resampled_gpu.shape
+
+        # Values should be very close (small numerical differences expected)
+        assert np.allclose(resampled_cpu, resampled_gpu, rtol=1e-5, atol=1e-6)
+
+    def test_interpolation_orders(self):
+        """Test different interpolation orders on GPU."""
+        volume = np.random.randn(20, 40, 40).astype(np.float32)
+        original_spacing = (2.0, 1.0, 1.0)
+        target_spacing = (1.0, 1.0, 1.0)
+
+        for order in range(6):  # 0 to 5
+            resampled = resample_volume_gpu(
+                volume, original_spacing, target_spacing, order=order
+            )
+            assert resampled.shape == (40, 40, 40)
+
+    def test_preserve_range_true(self):
+        """Test that GPU preserve_range=True clips to original range."""
+        volume = np.random.randn(20, 40, 40).astype(np.float32) * 100 + 500
+        original_min = volume.min()
+        original_max = volume.max()
+
+        original_spacing = (2.0, 1.0, 1.0)
+        target_spacing = (1.0, 0.5, 0.5)
+
+        resampled = resample_volume_gpu(
+            volume, original_spacing, target_spacing, preserve_range=True
+        )
+
+        assert resampled.min() >= original_min
+        assert resampled.max() <= original_max
+
+    def test_preserve_range_false(self):
+        """Test GPU preserve_range=False behavior."""
+        volume = np.random.randn(20, 40, 40).astype(np.float32) * 100 + 500
+
+        original_spacing = (2.0, 1.0, 1.0)
+        target_spacing = (1.0, 0.5, 0.5)
+
+        resampled = resample_volume_gpu(
+            volume, original_spacing, target_spacing, preserve_range=False
+        )
+
+        assert np.isfinite(resampled).all()
+
+    def test_invalid_dimensions(self):
+        """Test that GPU version also validates dimensions."""
+        invalid_shapes = [(100,), (50, 50), (5, 10, 10, 3)]
+
+        for shape in invalid_shapes:
+            volume = np.random.randn(*shape)
+            with pytest.raises(ValueError, match="Expected 3D volume"):
+                resample_volume_gpu(volume, (1, 1, 1), (2, 2, 2))
+
+    def test_invalid_spacing_dimensions(self):
+        """Test that GPU version validates spacing dimensions."""
+        volume = np.random.randn(10, 20, 20)
+
+        with pytest.raises(ValueError, match="must have 3 elements"):
+            resample_volume_gpu(volume, (1, 1), (1, 1, 1))
+
+        with pytest.raises(ValueError, match="must have 3 elements"):
+            resample_volume_gpu(volume, (1, 1, 1), (1, 1))
+
+    def test_negative_spacing_values(self):
+        """Test that GPU version rejects negative spacing."""
+        volume = np.random.randn(10, 20, 20)
+
+        with pytest.raises(ValueError, match="must be positive"):
+            resample_volume_gpu(volume, (-1, 1, 1), (1, 1, 1))
+
+        with pytest.raises(ValueError, match="must be positive"):
+            resample_volume_gpu(volume, (1, 1, 1), (1, -1, 1))
+
+    def test_realistic_ct_spacing(self):
+        """Test GPU version with realistic CT scan spacing values."""
+        volume = np.random.randn(100, 256, 256).astype(np.float32)
+        original_spacing = (2.5, 0.488, 0.488)
+        target_spacing = (1.0, 1.0, 1.0)
+
+        resampled = resample_volume_gpu(volume, original_spacing, target_spacing)
+
+        assert resampled.shape[0] > volume.shape[0]  # Upsampled in depth
+        assert resampled.shape[1] < volume.shape[1]  # Downsampled in-plane
+        assert resampled.shape[2] < volume.shape[2]
+
+    def test_large_volume_performance(self):
+        """Test GPU version with larger volume (performance check)."""
+        # Moderate size for testing (actual large volumes would be bigger)
+        volume = np.random.randn(100, 256, 256).astype(np.float32)
+        original_spacing = (2.0, 1.0, 1.0)
+        target_spacing = (1.0, 1.0, 1.0)
+
+        resampled = resample_volume_gpu(volume, original_spacing, target_spacing)
+
+        assert resampled.shape == (200, 256, 256)
+        assert np.isfinite(resampled).all()
+
+    def test_spacing_as_numpy_array(self):
+        """Test that GPU version accepts numpy arrays for spacing."""
+        volume = np.random.randn(20, 40, 40).astype(np.float32)
+        original_spacing = np.array([2.0, 1.0, 1.0])
+        target_spacing = np.array([1.0, 1.0, 1.0])
+
+        resampled = resample_volume_gpu(volume, original_spacing, target_spacing)
+
+        expected_shape = (40, 40, 40)
+        assert resampled.shape == expected_shape
+
+    def test_memory_cleanup(self):
+        """Test that GPU memory is properly cleaned up."""
+        import cupy as cp
+
+        # Get initial memory pool
+        mempool = cp.get_default_memory_pool()
+        initial_used = mempool.used_bytes()
+
+        # Run resampling
+        volume = np.random.randn(50, 100, 100).astype(np.float32)
+        _ = resample_volume_gpu(volume, (2.0, 1.0, 1.0), (1.0, 1.0, 1.0))
+
+        # Memory should be released (with some tolerance)
+        final_used = mempool.used_bytes()
+        # Allow for some memory pool fragmentation
+        assert final_used <= initial_used + 1024 * 1024  # 1MB tolerance
+
+
 class TestExtractPatches:
     """Tests for extract_patches function."""
 
@@ -986,6 +1169,234 @@ class TestExtractPatches:
             assert d % patch_size[0] == 0
             assert h % patch_size[1] == 0
             assert w % patch_size[2] == 0
+
+
+class TestGrayscaleToRgb:
+    """Tests for grayscale_to_rgb function."""
+
+    def test_2d_patches_basic(self):
+        """Test conversion of 2D grayscale patches to RGB."""
+        patches = np.random.randn(10, 256, 256).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        # Should have shape (N, 3, H, W)
+        assert rgb.shape == (10, 3, 256, 256)
+        assert rgb.dtype == patches.dtype
+
+    def test_3d_patches_basic(self):
+        """Test conversion of 3D grayscale patches to RGB."""
+        patches = np.random.randn(5, 16, 128, 128).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        # Should have shape (N, 3, D, H, W)
+        assert rgb.shape == (5, 3, 16, 128, 128)
+        assert rgb.dtype == patches.dtype
+
+    def test_2d_patches_with_channel_dim(self):
+        """Test conversion when 2D patches already have channel dimension."""
+        patches = np.random.randn(10, 1, 256, 256).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        # Should have shape (N, 3, H, W)
+        assert rgb.shape == (10, 3, 256, 256)
+        assert rgb.dtype == patches.dtype
+
+    def test_3d_patches_with_channel_dim(self):
+        """Test conversion when 3D patches already have channel dimension."""
+        patches = np.random.randn(5, 1, 16, 128, 128).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        # Should have shape (N, 3, D, H, W)
+        assert rgb.shape == (5, 3, 16, 128, 128)
+        assert rgb.dtype == patches.dtype
+
+    def test_channel_replication(self):
+        """Test that all three channels contain the same data."""
+        patches = np.random.randn(3, 64, 64).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        # All three channels should be identical
+        assert np.array_equal(rgb[:, 0, :, :], rgb[:, 1, :, :])
+        assert np.array_equal(rgb[:, 1, :, :], rgb[:, 2, :, :])
+        assert np.array_equal(rgb[:, 0, :, :], patches)
+
+    def test_channel_replication_3d(self):
+        """Test that all three channels contain the same data for 3D patches."""
+        patches = np.random.randn(2, 8, 32, 32).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        # All three channels should be identical
+        assert np.array_equal(rgb[:, 0, :, :, :], rgb[:, 1, :, :, :])
+        assert np.array_equal(rgb[:, 1, :, :, :], rgb[:, 2, :, :, :])
+        assert np.array_equal(rgb[:, 0, :, :, :], patches)
+
+    def test_single_patch_2d(self):
+        """Test conversion of a single 2D patch."""
+        patches = np.random.randn(1, 128, 128).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        assert rgb.shape == (1, 3, 128, 128)
+        # Verify replication
+        assert np.array_equal(rgb[0, 0], rgb[0, 1])
+        assert np.array_equal(rgb[0, 1], rgb[0, 2])
+
+    def test_single_patch_3d(self):
+        """Test conversion of a single 3D patch."""
+        patches = np.random.randn(1, 16, 64, 64).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        assert rgb.shape == (1, 3, 16, 64, 64)
+        # Verify replication
+        assert np.array_equal(rgb[0, 0], rgb[0, 1])
+        assert np.array_equal(rgb[0, 1], rgb[0, 2])
+
+    def test_dtype_preservation(self):
+        """Test that dtype is preserved."""
+        for dtype in [np.float32, np.float64, np.int16, np.uint8]:
+            patches = np.random.randint(0, 100, (5, 32, 32)).astype(dtype)
+            rgb = grayscale_to_rgb(patches)
+            assert rgb.dtype == dtype
+
+    def test_dtype_preservation_3d(self):
+        """Test that dtype is preserved for 3D patches."""
+        for dtype in [np.float32, np.float64]:
+            patches = np.random.randn(3, 8, 32, 32).astype(dtype)
+            rgb = grayscale_to_rgb(patches)
+            assert rgb.dtype == dtype
+
+    def test_values_unchanged(self):
+        """Test that values are exactly replicated, not modified."""
+        patches = np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]]).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        # Check each channel has exact values
+        for c in range(3):
+            assert np.array_equal(rgb[:, c, :, :], patches)
+
+    def test_negative_values(self):
+        """Test that negative values are preserved."""
+        patches = np.random.randn(5, 64, 64).astype(np.float32) * 100 - 50
+
+        rgb = grayscale_to_rgb(patches)
+
+        # Should preserve negative values
+        assert rgb.min() < 0
+        assert np.array_equal(rgb[:, 0, :, :], patches)
+
+    def test_large_batch_2d(self):
+        """Test with a large batch of 2D patches."""
+        patches = np.random.randn(100, 128, 128).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        assert rgb.shape == (100, 3, 128, 128)
+
+    def test_large_batch_3d(self):
+        """Test with a large batch of 3D patches."""
+        patches = np.random.randn(50, 8, 64, 64).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        assert rgb.shape == (50, 3, 8, 64, 64)
+
+    def test_realistic_ct_patches(self):
+        """Test with realistic CT patch dimensions."""
+        # 2D patches from CT
+        patches_2d = np.random.randn(32, 224, 224).astype(np.float32)
+        rgb_2d = grayscale_to_rgb(patches_2d)
+        assert rgb_2d.shape == (32, 3, 224, 224)
+
+        # 3D patches from CT
+        patches_3d = np.random.randn(16, 16, 224, 224).astype(np.float32)
+        rgb_3d = grayscale_to_rgb(patches_3d)
+        assert rgb_3d.shape == (16, 3, 16, 224, 224)
+
+    def test_invalid_dimensions_1d(self):
+        """Test that 1D array raises ValueError."""
+        patches = np.random.randn(100)
+
+        with pytest.raises(ValueError, match="Expected 3D.*4D.*5D"):
+            grayscale_to_rgb(patches)
+
+    def test_invalid_dimensions_2d(self):
+        """Test that 2D array raises ValueError."""
+        patches = np.random.randn(10, 100)
+
+        with pytest.raises(ValueError, match="Expected 3D.*4D.*5D"):
+            grayscale_to_rgb(patches)
+
+    def test_invalid_dimensions_6d(self):
+        """Test that 6D array raises ValueError."""
+        patches = np.random.randn(2, 3, 4, 8, 8, 8)
+
+        with pytest.raises(ValueError, match="Expected 3D.*4D.*5D"):
+            grayscale_to_rgb(patches)
+
+    def test_invalid_channel_dim_4d(self):
+        """Test that 4D array with channel != 1 is treated as 3D patches."""
+        # (N=5, D=16, H=64, W=64) should work as 3D patches
+        patches = np.random.randn(5, 16, 64, 64).astype(np.float32)
+        rgb = grayscale_to_rgb(patches)
+        assert rgb.shape == (5, 3, 16, 64, 64)
+
+    def test_invalid_channel_dim_5d(self):
+        """Test that 5D array with channel != 1 raises ValueError."""
+        patches = np.random.randn(5, 3, 16, 64, 64)  # Channel = 3
+
+        with pytest.raises(ValueError, match="expected channel dimension.*to be 1"):
+            grayscale_to_rgb(patches)
+
+    def test_memory_efficiency(self):
+        """Test that function doesn't create excessive copies."""
+        patches = np.random.randn(10, 128, 128).astype(np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        # RGB should be exactly 3x the size of patches
+        expected_size = patches.nbytes * 3
+        assert rgb.nbytes == expected_size
+
+    def test_integration_with_extract_patches(self):
+        """Test integration with extract_patches function."""
+        # Create volume and extract patches
+        volume = np.random.randn(50, 256, 256).astype(np.float32)
+        patches, positions = extract_patches(volume, patch_size=(1, 128, 128))
+
+        # Convert to RGB
+        # First remove the depth dimension since it's 1
+        patches_2d = patches[:, 0, :, :]  # (N, H, W)
+        rgb = grayscale_to_rgb(patches_2d)
+
+        assert rgb.shape[0] == patches.shape[0]  # Same number of patches
+        assert rgb.shape[1] == 3  # RGB channels
+        assert rgb.shape[2:] == (128, 128)  # Same spatial dimensions
+
+    def test_zero_values(self):
+        """Test with zero-valued patches."""
+        patches = np.zeros((5, 64, 64), dtype=np.float32)
+
+        rgb = grayscale_to_rgb(patches)
+
+        assert np.all(rgb == 0)
+        assert rgb.shape == (5, 3, 64, 64)
+
+    def test_constant_values(self):
+        """Test with constant-valued patches."""
+        patches = np.ones((5, 64, 64), dtype=np.float32) * 42
+
+        rgb = grayscale_to_rgb(patches)
+
+        assert np.all(rgb == 42)
+        assert rgb.shape == (5, 3, 64, 64)
 
 
 if __name__ == "__main__":
