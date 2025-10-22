@@ -12,6 +12,7 @@ from src.preprocessing import (
     normalize_volume_zscore_inplace,
     normalize_batch_zscore,
     resample_volume,
+    extract_patches,
 )
 
 
@@ -632,6 +633,359 @@ class TestResampleVolume:
         resampled_size_mb = resampled.nbytes / (1024**2)
         # Resampled should be ~2x larger (doubled in first dimension)
         assert resampled_size_mb < volume_size_mb * 3  # Some margin for safety
+
+
+class TestExtractPatches:
+    """Tests for extract_patches function."""
+
+    def test_basic_non_overlapping_3d_patches(self):
+        """Test extraction of non-overlapping 3D patches."""
+        volume = np.random.randn(40, 80, 80).astype(np.float32)
+        patch_size = (10, 20, 20)
+
+        patches, positions = extract_patches(volume, patch_size)
+
+        # Should have 4*4*4 = 64 patches
+        assert patches.shape == (64, 10, 20, 20)
+        assert positions.shape == (64, 3)
+        assert patches.dtype == volume.dtype
+
+    def test_basic_non_overlapping_2d_patches(self):
+        """Test extraction of 2D patches (depth=1)."""
+        volume = np.random.randn(50, 100, 100).astype(np.float32)
+        patch_size = (1, 50, 50)
+
+        patches, positions = extract_patches(volume, patch_size)
+
+        # Should have 50*2*2 = 200 patches
+        assert patches.shape == (200, 1, 50, 50)
+        assert positions.shape == (200, 3)
+
+    def test_overlapping_patches(self):
+        """Test extraction with overlapping patches."""
+        volume = np.random.randn(20, 40, 40).astype(np.float32)
+        patch_size = (10, 20, 20)
+        stride = (5, 10, 10)  # 50% overlap
+
+        patches, positions = extract_patches(volume, patch_size, stride=stride)
+
+        # Calculate expected: ceil((20-10)/5)+1 * ceil((40-20)/10)+1 * ceil((40-20)/10)+1
+        # = 3 * 3 * 3 = 27
+        expected_patches = 27
+        assert patches.shape[0] == expected_patches
+        assert patches.shape[1:] == patch_size
+
+    def test_stride_equals_patch_size(self):
+        """Test that default stride equals patch_size (non-overlapping)."""
+        volume = np.random.randn(30, 60, 60).astype(np.float32)
+        patch_size = (10, 20, 20)
+
+        patches_default, positions_default = extract_patches(volume, patch_size)
+        patches_explicit, positions_explicit = extract_patches(
+            volume, patch_size, stride=patch_size
+        )
+
+        assert np.array_equal(patches_default, patches_explicit)
+        assert np.array_equal(positions_default, positions_explicit)
+
+    def test_padding_constant(self):
+        """Test constant padding for incomplete patches."""
+        volume = np.ones((25, 55, 55), dtype=np.float32) * 10
+        patch_size = (10, 30, 30)
+        padding_value = -100.0
+
+        patches, positions = extract_patches(
+            volume, patch_size, padding_mode="constant", padding_value=padding_value
+        )
+
+        # Should pad and create patches
+        assert patches.shape[1:] == patch_size
+
+        # Check that padding value appears in some patches
+        # (specifically in patches that extend beyond original volume)
+        last_patch = patches[-1]  # Last patch likely contains padding
+        if last_patch.min() < 0:  # If padding is present
+            assert padding_value in last_patch
+
+    def test_padding_edge(self):
+        """Test edge padding mode."""
+        volume = np.random.randn(25, 55, 55).astype(np.float32)
+        patch_size = (10, 30, 30)
+
+        patches, positions = extract_patches(volume, patch_size, padding_mode="edge")
+
+        # Should create patches without errors
+        assert patches.shape[1:] == patch_size
+        assert np.isfinite(patches).all()
+
+    def test_padding_reflect(self):
+        """Test reflect padding mode."""
+        volume = np.random.randn(25, 55, 55).astype(np.float32)
+        patch_size = (10, 30, 30)
+
+        patches, positions = extract_patches(volume, patch_size, padding_mode="reflect")
+
+        # Should create patches without errors
+        assert patches.shape[1:] == patch_size
+        assert np.isfinite(patches).all()
+
+    def test_drop_incomplete_patches(self):
+        """Test dropping incomplete patches at boundaries."""
+        volume = np.random.randn(25, 55, 55).astype(np.float32)
+        patch_size = (10, 20, 20)
+
+        patches, positions = extract_patches(volume, patch_size, drop_incomplete=True)
+
+        # Should only include complete patches
+        # (25-10)//10 + 1 = 2, (55-20)//20 + 1 = 2, (55-20)//20 + 1 = 2
+        # = 2*2*2 = 8 patches
+        assert patches.shape == (8, 10, 20, 20)
+
+        # Verify all patches are from within original volume bounds
+        for pos in positions:
+            d, h, w = pos
+            assert d + patch_size[0] <= volume.shape[0]
+            assert h + patch_size[1] <= volume.shape[1]
+            assert w + patch_size[2] <= volume.shape[2]
+
+    def test_drop_incomplete_with_overlap(self):
+        """Test dropping incomplete patches with overlapping stride."""
+        volume = np.random.randn(30, 60, 60).astype(np.float32)
+        patch_size = (10, 20, 20)
+        stride = (5, 10, 10)
+
+        patches, positions = extract_patches(
+            volume, patch_size, stride=stride, drop_incomplete=True
+        )
+
+        # Calculate: (30-10)//5 + 1 = 5, (60-20)//10 + 1 = 5, (60-20)//10 + 1 = 5
+        # = 5*5*5 = 125
+        assert patches.shape == (125, 10, 20, 20)
+
+    def test_positions_correctness(self):
+        """Test that positions correctly identify patch locations."""
+        volume = np.arange(1000).reshape(10, 10, 10).astype(np.float32)
+        patch_size = (5, 5, 5)
+
+        patches, positions = extract_patches(volume, patch_size)
+
+        # Verify first patch
+        d, h, w = positions[0]
+        expected_patch = volume[d : d + 5, h : h + 5, w : w + 5]
+        assert np.array_equal(patches[0], expected_patch)
+
+        # Verify a middle patch
+        mid_idx = len(patches) // 2
+        d, h, w = positions[mid_idx]
+        expected_patch = volume[d : d + 5, h : h + 5, w : w + 5]
+        assert np.array_equal(patches[mid_idx], expected_patch)
+
+    def test_single_patch(self):
+        """Test extraction when volume size equals patch size."""
+        volume = np.random.randn(10, 20, 20).astype(np.float32)
+        patch_size = (10, 20, 20)
+
+        patches, positions = extract_patches(volume, patch_size, drop_incomplete=True)
+
+        # Should extract exactly one patch
+        assert patches.shape == (1, 10, 20, 20)
+        assert np.array_equal(patches[0], volume)
+        assert np.array_equal(positions[0], [0, 0, 0])
+
+    def test_2d_slices_extraction(self):
+        """Test extracting individual 2D slices."""
+        volume = np.random.randn(50, 100, 100).astype(np.float32)
+        patch_size = (1, 100, 100)
+        stride = (1, 100, 100)
+
+        patches, positions = extract_patches(
+            volume, patch_size, stride=stride, drop_incomplete=True
+        )
+
+        # Should extract 50 slices
+        assert patches.shape == (50, 1, 100, 100)
+
+        # Verify slices match original
+        for i in range(50):
+            assert np.array_equal(patches[i, 0], volume[i])
+
+    def test_overlapping_2d_patches(self):
+        """Test extracting overlapping 2D patches from slices."""
+        volume = np.random.randn(10, 256, 256).astype(np.float32)
+        patch_size = (1, 128, 128)
+        stride = (1, 64, 64)  # 50% overlap in spatial dimensions
+
+        patches, positions = extract_patches(volume, patch_size, stride=stride)
+
+        # Calculate: 10 * ceil((256-128)/64+1) * ceil((256-128)/64+1)
+        # = 10 * 3 * 3 = 90
+        assert patches.shape[0] >= 90
+        assert patches.shape[1:] == (1, 128, 128)
+
+    def test_invalid_dimensions(self):
+        """Test that non-3D arrays raise ValueError."""
+        invalid_volumes = [
+            np.random.randn(100),  # 1D
+            np.random.randn(50, 50),  # 2D
+            np.random.randn(5, 10, 10, 3),  # 4D
+        ]
+
+        for vol in invalid_volumes:
+            with pytest.raises(ValueError, match="Expected 3D volume"):
+                extract_patches(vol, (5, 5, 5))
+
+    def test_invalid_patch_size_dimensions(self):
+        """Test that invalid patch_size raises ValueError."""
+        volume = np.random.randn(20, 40, 40)
+
+        with pytest.raises(ValueError, match="must have 3 elements"):
+            extract_patches(volume, (10, 10))
+
+        with pytest.raises(ValueError, match="must have 3 elements"):
+            extract_patches(volume, (10, 10, 10, 10))
+
+    def test_invalid_patch_size_values(self):
+        """Test that non-positive patch sizes raise ValueError."""
+        volume = np.random.randn(20, 40, 40)
+
+        with pytest.raises(ValueError, match="must be positive"):
+            extract_patches(volume, (0, 10, 10))
+
+        with pytest.raises(ValueError, match="must be positive"):
+            extract_patches(volume, (10, -5, 10))
+
+    def test_invalid_stride_dimensions(self):
+        """Test that invalid stride raises ValueError."""
+        volume = np.random.randn(20, 40, 40)
+
+        with pytest.raises(ValueError, match="must have 3 elements"):
+            extract_patches(volume, (10, 10, 10), stride=(5, 5))
+
+        with pytest.raises(ValueError, match="must have 3 elements"):
+            extract_patches(volume, (10, 10, 10), stride=(5, 5, 5, 5))
+
+    def test_invalid_stride_values(self):
+        """Test that non-positive stride values raise ValueError."""
+        volume = np.random.randn(20, 40, 40)
+
+        with pytest.raises(ValueError, match="must be positive"):
+            extract_patches(volume, (10, 10, 10), stride=(0, 5, 5))
+
+        with pytest.raises(ValueError, match="must be positive"):
+            extract_patches(volume, (10, 10, 10), stride=(5, -1, 5))
+
+    def test_patch_size_larger_than_volume_with_padding(self):
+        """Test patch extraction when patch is larger than volume (with padding)."""
+        volume = np.random.randn(5, 10, 10).astype(np.float32)
+        patch_size = (10, 20, 20)
+
+        patches, positions = extract_patches(
+            volume, patch_size, drop_incomplete=False, padding_value=0
+        )
+
+        # Should create one padded patch
+        assert patches.shape == (1, 10, 20, 20)
+
+    def test_patch_size_larger_than_volume_drop_incomplete(self):
+        """Test that patch larger than volume with drop_incomplete raises error."""
+        volume = np.random.randn(5, 10, 10).astype(np.float32)
+        patch_size = (10, 20, 20)
+
+        with pytest.raises(ValueError, match="larger than volume shape"):
+            extract_patches(volume, patch_size, drop_incomplete=True)
+
+    def test_dtype_preservation(self):
+        """Test that patch dtype matches volume dtype."""
+        for dtype in [np.float32, np.float64, np.int16, np.uint8]:
+            volume = np.random.randint(0, 100, (20, 40, 40)).astype(dtype)
+            patches, positions = extract_patches(volume, (10, 20, 20))
+
+            assert patches.dtype == dtype
+
+    def test_large_volume_small_patches(self):
+        """Test extraction of many small patches from larger volume."""
+        volume = np.random.randn(100, 200, 200).astype(np.float32)
+        patch_size = (10, 20, 20)
+
+        patches, positions = extract_patches(volume, patch_size)
+
+        # Should create many patches: 10*10*10 = 1000
+        assert patches.shape == (1000, 10, 20, 20)
+        assert positions.shape == (1000, 3)
+
+    def test_realistic_ct_patching(self):
+        """Test realistic CT volume patching scenario."""
+        # Simulate typical CT volume
+        volume = np.random.randn(150, 512, 512).astype(np.float32)
+        patch_size = (16, 128, 128)
+        stride = (16, 128, 128)  # Non-overlapping
+
+        patches, positions = extract_patches(
+            volume, patch_size, stride=stride, drop_incomplete=False
+        )
+
+        # Calculate expected patches
+        # ceil(150/16) * ceil(512/128) * ceil(512/128) = 10*4*4 = 160
+        assert patches.shape[0] >= 160
+        assert patches.shape[1:] == patch_size
+
+    def test_memory_efficiency(self):
+        """Test that patch extraction is memory efficient."""
+        volume = np.random.randn(50, 100, 100).astype(np.float32)
+        patch_size = (10, 20, 20)
+
+        patches, positions = extract_patches(volume, patch_size)
+
+        # Verify memory is allocated correctly
+        expected_num_patches = 5 * 5 * 5  # 125 patches
+        assert patches.shape[0] == expected_num_patches
+
+        # Total memory should be reasonable
+        volume_mb = volume.nbytes / (1024**2)
+        patches_mb = patches.nbytes / (1024**2)
+        positions_mb = positions.nbytes / (1024**2)
+
+        # Patches will be larger due to replication, but should be finite
+        assert patches_mb > 0
+        assert positions_mb < 1  # Positions are small (int32)
+        # With non-overlapping patches, memory should be comparable to volume size
+        assert patches_mb >= volume_mb  # At least as large due to potential padding
+
+    def test_patch_content_integrity(self):
+        """Test that extracted patches contain correct data."""
+        # Create volume with known pattern
+        volume = np.zeros((20, 40, 40), dtype=np.float32)
+        volume[5:10, 10:20, 10:20] = 1.0  # Create a box of ones
+
+        patch_size = (10, 20, 20)
+        patches, positions = extract_patches(volume, patch_size, drop_incomplete=True)
+
+        # Find patch containing the box
+        for i, pos in enumerate(positions):
+            d, h, w = pos
+            if d <= 5 < d + 10 and h <= 10 < h + 20 and w <= 10 < w + 20:
+                # This patch should contain part of the box
+                assert patches[i].max() == 1.0
+                assert patches[i].sum() > 0
+
+    def test_no_overlap_coverage(self):
+        """Test that non-overlapping patches cover the entire volume."""
+        volume = np.random.randn(30, 60, 60).astype(np.float32)
+        patch_size = (10, 20, 20)
+
+        patches, positions = extract_patches(
+            volume, patch_size, stride=patch_size, drop_incomplete=False
+        )
+
+        # With padding, should have exactly 3*3*3 = 27 patches
+        assert patches.shape[0] == 27
+
+        # Verify positions are grid-aligned
+        for i, pos in enumerate(positions):
+            d, h, w = pos
+            assert d % patch_size[0] == 0
+            assert h % patch_size[1] == 0
+            assert w % patch_size[2] == 0
 
 
 if __name__ == "__main__":

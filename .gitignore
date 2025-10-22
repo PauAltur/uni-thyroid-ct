@@ -6,4 +6,10 @@ venv/
 hf_token.txt
 
 # pycache files
-__pycache__/
+**/__pycache__/
+
+# .ruff_cache   
+.ruff_cache/
+
+# .pytest_cache
+.pytest_cache/

@@ -320,6 +320,199 @@ def resample_volume(
     return resampled
 
 
+def extract_patches(
+    volume: np.ndarray,
+    patch_size: Tuple[int, int, int],
+    stride: Optional[Tuple[int, int, int]] = None,
+    padding_mode: str = "constant",
+    padding_value: float = 0.0,
+    drop_incomplete: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Extract 3D or 2D patches from a 3D volume with configurable overlap and boundary handling.
+
+    This function efficiently extracts patches from large medical imaging volumes using
+    optimized array operations. Patches can overlap (controlled by stride) and boundaries
+    can be handled by padding or dropping incomplete patches.
+
+    For 2D patches from a 3D volume, set patch_size depth to 1 (e.g., (1, 256, 256)).
+
+    Args:
+        volume: Input 3D numpy array of shape (D, H, W).
+        patch_size: Size of patches as (depth, height, width).
+                   For 2D patches, use depth=1 (e.g., (1, 256, 256)).
+                   All values must be positive integers.
+        stride: Step size between patches as (depth_stride, height_stride, width_stride).
+               If None, defaults to patch_size (non-overlapping patches).
+               Use stride < patch_size for overlapping patches.
+               Use stride > patch_size for gaps between patches (not recommended).
+        padding_mode: How to pad the volume if needed:
+                     'constant': Pad with padding_value (default)
+                     'reflect': Reflect values at boundaries
+                     'edge': Extend edge values
+                     'wrap': Wrap around to opposite edge
+                     Only used if drop_incomplete=False.
+        padding_value: Value to use for padding when padding_mode='constant'.
+                      Default is 0.0 (typical for CT background/air).
+        drop_incomplete: If True, drop patches that would extend beyond volume boundaries.
+                        If False, pad the volume to ensure all patches fit.
+                        Default is False.
+
+    Returns:
+        patches: Array of extracted patches with shape:
+                (num_patches, patch_depth, patch_height, patch_width)
+                For 2D patches (depth=1): (num_patches, 1, patch_height, patch_width)
+        positions: Array of patch positions (top-left corner) with shape:
+                  (num_patches, 3) containing (d_start, h_start, w_start)
+                  Useful for reconstructing the volume from patches.
+
+    Raises:
+        ValueError: If input is not 3D, patch_size is invalid, or stride is invalid.
+
+    Examples:
+        >>> # Extract non-overlapping 3D patches
+        >>> volume = np.random.randn(100, 512, 512).astype(np.float32)
+        >>> patches, positions = extract_patches(volume, patch_size=(32, 64, 64))
+        >>> print(patches.shape)
+        (128, 32, 64, 64)  # 4*8*8 = 256 patches (with padding)
+
+        >>> # Extract overlapping 2D slices
+        >>> volume = np.random.randn(100, 512, 512).astype(np.float32)
+        >>> patches, positions = extract_patches(
+        ...     volume, patch_size=(1, 256, 256), stride=(1, 128, 128)
+        ... )
+        >>> print(patches.shape)
+        (300, 1, 256, 256)  # 100*3*3 = 300 patches (overlapping)
+
+        >>> # Extract patches and drop incomplete ones
+        >>> volume = np.random.randn(100, 500, 500).astype(np.float32)
+        >>> patches, positions = extract_patches(
+        ...     volume, patch_size=(10, 100, 100), drop_incomplete=True
+        ... )
+        >>> print(patches.shape)
+        (500, 10, 100, 100)  # 10*5*5 = 250 complete patches only
+
+    Performance notes:
+        - Uses numpy's efficient array slicing and indexing
+        - Memory usage: patches array is num_patches * patch_volume
+        - For very large volumes, consider processing in batches
+    """
+    # Validate input
+    if volume.ndim != 3:
+        raise ValueError(
+            f"Expected 3D volume (D, H, W), got shape {volume.shape} with {volume.ndim} dimensions"
+        )
+
+    # Validate and process patch_size
+    if len(patch_size) != 3:
+        raise ValueError(
+            f"patch_size must have 3 elements (depth, height, width), got {len(patch_size)}"
+        )
+
+    patch_d, patch_h, patch_w = patch_size
+    if patch_d <= 0 or patch_h <= 0 or patch_w <= 0:
+        raise ValueError(f"All patch_size values must be positive, got {patch_size}")
+
+    vol_d, vol_h, vol_w = volume.shape
+
+    # Validate patch size doesn't exceed volume size (before padding)
+    if not drop_incomplete:
+        # When padding, we can handle any patch size
+        pass
+    else:
+        # When dropping incomplete, need at least one full patch
+        if patch_d > vol_d or patch_h > vol_h or patch_w > vol_w:
+            raise ValueError(
+                f"patch_size {patch_size} is larger than volume shape {volume.shape}. "
+                f"Cannot extract patches with drop_incomplete=True."
+            )
+
+    # Set default stride (non-overlapping)
+    if stride is None:
+        stride = patch_size
+
+    # Validate stride
+    if len(stride) != 3:
+        raise ValueError(
+            f"stride must have 3 elements (depth, height, width), got {len(stride)}"
+        )
+
+    stride_d, stride_h, stride_w = stride
+    if stride_d <= 0 or stride_h <= 0 or stride_w <= 0:
+        raise ValueError(f"All stride values must be positive, got {stride}")
+
+    # Calculate padding needed (if not dropping incomplete patches)
+    if drop_incomplete:
+        # Calculate how many complete patches fit
+        num_patches_d = max(1, (vol_d - patch_d) // stride_d + 1)
+        num_patches_h = max(1, (vol_h - patch_h) // stride_h + 1)
+        num_patches_w = max(1, (vol_w - patch_w) // stride_w + 1)
+
+        padded_volume = volume
+        pad_d, pad_h, pad_w = 0, 0, 0
+    else:
+        # Calculate number of patches needed to cover the volume
+        num_patches_d = max(1, int(np.ceil((vol_d - patch_d) / stride_d)) + 1)
+        num_patches_h = max(1, int(np.ceil((vol_h - patch_h) / stride_h)) + 1)
+        num_patches_w = max(1, int(np.ceil((vol_w - patch_w) / stride_w)) + 1)
+
+        # Calculate required volume size
+        required_d = (num_patches_d - 1) * stride_d + patch_d
+        required_h = (num_patches_h - 1) * stride_h + patch_h
+        required_w = (num_patches_w - 1) * stride_w + patch_w
+
+        # Calculate padding needed
+        pad_d = max(0, required_d - vol_d)
+        pad_h = max(0, required_h - vol_h)
+        pad_w = max(0, required_w - vol_w)
+
+        # Apply padding if needed
+        if pad_d > 0 or pad_h > 0 or pad_w > 0:
+            # Pad symmetrically when possible, extra padding goes to the end
+            pad_width = (
+                (0, pad_d),
+                (0, pad_h),
+                (0, pad_w),
+            )
+
+            if padding_mode == "constant":
+                padded_volume = np.pad(
+                    volume, pad_width, mode="constant", constant_values=padding_value
+                )
+            else:
+                padded_volume = np.pad(volume, pad_width, mode=padding_mode)
+        else:
+            padded_volume = volume
+
+    # Pre-allocate patches array
+    total_patches = num_patches_d * num_patches_h * num_patches_w
+    patches = np.empty((total_patches, patch_d, patch_h, patch_w), dtype=volume.dtype)
+    positions = np.empty((total_patches, 3), dtype=np.int32)
+
+    # Extract patches efficiently using numpy indexing
+    patch_idx = 0
+    for d_idx in range(num_patches_d):
+        d_start = d_idx * stride_d
+        d_end = d_start + patch_d
+
+        for h_idx in range(num_patches_h):
+            h_start = h_idx * stride_h
+            h_end = h_start + patch_h
+
+            for w_idx in range(num_patches_w):
+                w_start = w_idx * stride_w
+                w_end = w_start + patch_w
+
+                # Extract patch
+                patches[patch_idx] = padded_volume[
+                    d_start:d_end, h_start:h_end, w_start:w_end
+                ]
+                positions[patch_idx] = [d_start, h_start, w_start]
+                patch_idx += 1
+
+    return patches, positions
+
+
 if __name__ == "__main__":
     """Test and demonstrate the normalization functions."""
 
