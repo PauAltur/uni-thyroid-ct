@@ -1,0 +1,30 @@
+# Data path configuration for different machines and users
+# Add entries for each machine/user combination that needs access to the data
+
+paths:
+  # Example format:
+  # - hostname: "MACHINE_NAME"
+  #   username: "user_name"
+  #   data_path: "C:\\path\\to\\data"
+  #   description: "Optional description"
+  
+  # Current configuration
+  - hostname: "ddm06608"  # Default/fallback (uses regex pattern)
+    username: "altp"
+    raw_data_path: "K:\\499-ProjectData\\2025\\P25-0048_Thyroid_Recurrence\\04-Processed_Datasets"
+    processed_data_path: "U:\\users\\altp\\data"
+    description: "Default path for altp user"
+  
+  # Add more configurations as needed
+  # - hostname: "LAB-PC-01"
+  #   username: "researcher"
+  #   data_path: "/mnt/data/thyroid_ct"
+  #   description: "Lab workstation"
+  
+  # - hostname: "SERVER.*"  # Regex pattern to match multiple servers
+  #   username: ".*"  # Match any user
+  #   data_path: "/data/shared/thyroid_project"
+  #   description: "Shared server storage"
+
+# Fallback path if no match is found (optional)
+default_path: null  # Set to a path string or leave as null to raise an error

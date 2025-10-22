@@ -4,3 +4,6 @@ venv/
 
 # hugging face token
 hf_token.txt
+
+# pycache files
+__pycache__/
