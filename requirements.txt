@@ -1,9 +1,14 @@
+cupy-cuda11x
+h5py
 huggingface_hub
+hydra-core
 ipywidgets
 ipython
 ipykernel
 matplotlib
 numpy
+pandas
+pillow
 pre-commit
 pytest
 pyyaml
@@ -11,6 +16,7 @@ scipy
 scikit-learn
 tifffile
 timm
+tqdm
 --extra-index-url https://download.pytorch.org/whl/cu118
 torch
 torchvision

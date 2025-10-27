@@ -13,3 +13,9 @@ hf_token.txt
 
 # .pytest_cache
 .pytest_cache/
+
+# huggingface cache
+.hf_cache/
+
+# output files
+outputs/

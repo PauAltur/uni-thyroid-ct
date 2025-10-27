@@ -1,0 +1,111 @@
+# Configuration for preprocessing and embedding extraction pipeline
+# This config uses Hydra for structured configuration management
+
+defaults:
+  - _self_
+
+# Paths configuration
+paths:
+  # Input directories
+  data_dir: "K:/499-ProjectData/2025/P25-0048_Thyroid_Recurrence/04-Processed_Datasets/test_dataset"
+  resolution_csv: "K:/499-ProjectData/2025/P25-0048_Thyroid_Recurrence/02-CI_VI_Segmentation/data/resolutions.csv"
+  
+  # Output directory for embeddings
+  output_dir: "T:/users/altp/data/embeddings"
+  output_filename: "test_thyroid_embeddings.h5"
+  
+  # Cache directories (to avoid C: drive issues)
+  hf_cache: "T:/users/altp/cache/huggingface"
+  cupy_cache: "T:/users/altp/.cupy"  # CuPy kernel cache location
+
+# Data loading settings
+data:
+  # File naming patterns (use {sample_code} as placeholder)
+  volume_pattern: "{sample_code}.tif"
+  tissue_mask_pattern: "{sample_code}_tissue.tif"
+  invasion_mask_pattern: "{sample_code}_mask.tif"
+  
+  # CSV column names for resolution
+  csv_columns:
+    filename: "filename"
+    x_resolution: "x_resolution"  # Width spacing
+    y_resolution: "y_resolution"  # Height spacing
+    z_resolution: "z_resolution"  # Depth spacing
+
+# Preprocessing settings
+preprocessing:
+  # Normalization
+  normalization:
+    method: "zscore"  # or "zscore_inplace" for memory efficiency
+    epsilon: 1.0e-8
+    dtype: "float32"
+  
+  # Resampling
+  resampling:
+    target_spacing: [0.012, 0.012, 0.012]  # [depth, height, width] in mm
+    interpolation_order: 3  # 3 = cubic
+    mode: "constant"
+    cval: 0.0
+    preserve_range: true
+    use_gpu: true  # Set to false to use CPU (scipy)
+  
+  # Patch extraction
+  patching:
+    patch_size: [1, 224, 224]  # [depth, height, width] - depth=1 for 2D patches
+    stride: [1, 224, 224]  # Set stride < patch_size for overlap, = patch_size for non-overlapping
+    padding_mode: "edge"
+    padding_value: 0.0
+    drop_incomplete: false
+  
+  # Tissue filtering
+  tissue_filter:
+    min_tissue_percentage: 0.0  # Keep patches with any tissue (>0%). Adjust as needed (e.g., 10.0 for >10%)
+  
+  # RGB conversion (automatic - just stacks grayscale 3 times)
+  rgb_conversion:
+    enabled: true
+
+# Model settings
+model:
+  # UNI model configuration
+  name: "hf-hub:MahmoodLab/UNI2-h"
+  pretrained: true
+  batch_size: 32  # Number of patches to process at once
+  device: "cuda"  # or "cpu"
+  
+  # Hugging Face login (if needed)
+  hf_token_file: "./hf_token.txt"  # Path to token file, or null if not needed
+
+# Output settings
+output:
+  # HDF5 structure
+  compression: "lzf"  # "lzf" (fast, no level) or "gzip" (slower, better compression)
+  compression_level: 4  # Only used for gzip (0-9, ignored for lzf)
+  
+  # Metadata to save per patch
+  metadata_fields:
+    - "sample_code"
+    - "patch_index"
+    - "position_d"  # Depth position
+    - "position_h"  # Height position
+    - "position_w"  # Width position
+    - "coord_d_normalized"  # Normalized depth coordinate [0, 1]
+    - "coord_h_normalized"  # Normalized height coordinate [0, 1]
+    - "coord_w_normalized"  # Normalized width coordinate [0, 1]
+    - "tissue_percentage"
+    - "has_invasion"  # Boolean: any invasion present
+    - "invasion_type"  # 0 (no invasion) or 1-4
+    - "invasion_percentage"
+
+# Logging and debugging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_file: null  # Set path to save logs to file, or null for console only
+  save_visualization: false  # Save sample patch visualizations for debugging
+
+# Runtime settings
+runtime:
+  num_workers: 4  # For data loading (if using multiprocessing)
+  pin_memory: true  # For faster GPU transfer
+  deterministic: false  # Set true for reproducible results (slower)
+  seed: 42
