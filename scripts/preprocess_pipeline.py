@@ -125,19 +125,44 @@ def get_sample_resolution(
     filename_col = cfg.data.csv_columns.filename
     volume_pattern = cfg.data.volume_pattern.replace("{sample_code}", sample_code)
     
-    # Find the matching row
+    # Strategy 1: Exact match with full pattern
     match = resolution_df[resolution_df[filename_col] == volume_pattern]
     
     if len(match) == 0:
-        # Try without .tif extension
+        # Strategy 2: Try exact match without .tif extension
         sample_name = sample_code.replace(".tif", "")
-        match = resolution_df[resolution_df[filename_col].str.contains(sample_name)]
+        match = resolution_df[resolution_df[filename_col] == sample_name]
     
     if len(match) == 0:
-        raise ValueError(f"Resolution not found for sample: {sample_code}")
+        # Strategy 3: Check if CSV filename contains the sample code (or sample_name)
+        # Use regex=False for literal string matching, case-insensitive
+        match = resolution_df[resolution_df[filename_col].str.contains(sample_name, case=False, na=False, regex=False)]
+    
+    if len(match) == 0:
+        # Strategy 4: Check if sample code contains the CSV filename (bidirectional)
+        # This handles cases where CSV has shorter names than actual files
+        def check_contains(csv_filename):
+            if pd.isna(csv_filename):
+                return False
+            # Remove .tif extension from CSV filename for comparison
+            csv_name = str(csv_filename).replace(".tif", "").replace(".TIF", "")
+            # Check if sample_name contains csv_name as substring (case-insensitive)
+            return csv_name.lower() in sample_name.lower() if csv_name else False
+        
+        match = resolution_df[resolution_df[filename_col].apply(check_contains)]
+    
+    if len(match) == 0:
+        raise ValueError(
+            f"Resolution not found for sample: {sample_code}\n"
+            f"  Tried matching against {len(resolution_df)} CSV entries in column '{filename_col}'\n"
+            f"  Sample name: {sample_name}\n"
+            f"  Available filenames (first 10): {resolution_df[filename_col].head(10).tolist()}"
+        )
     
     if len(match) > 1:
-        logger.warning(f"Multiple resolution entries found for {sample_code}, using first")
+        logger.warning(f"Multiple resolution entries found for {sample_code}, using first match: {match.iloc[0][filename_col]}")
+    else:
+        logger.debug(f"Matched {sample_code} to CSV entry: {match.iloc[0][filename_col]}")
     
     row = match.iloc[0]
     
@@ -235,11 +260,12 @@ def preprocess_volume(
     
     logger.info(f"  Resampling from {original_spacing} to {target_spacing} mm...")
     
-    # Check volume size to avoid GPU timeout on large volumes
+    # Check volume size to avoid GPU timeout on large volumes. Threshold comes from config.
     volume_size_mb = volume.nbytes / (1024 * 1024)
-    max_gpu_volume_mb = 1000  # Max 1000MB for GPU to avoid Windows TDR timeout
-    
-    use_gpu = resamp_cfg.use_gpu
+    # Read threshold from config (resampling.max_gpu_volume_mb), default to 1000 if missing
+    max_gpu_volume_mb = getattr(resamp_cfg, "max_gpu_volume_mb", 1000)
+
+    use_gpu = bool(resamp_cfg.use_gpu)
     if use_gpu and volume_size_mb > max_gpu_volume_mb:
         logger.warning(
             f"  Volume too large for GPU resampling ({volume_size_mb:.1f} MB > {max_gpu_volume_mb} MB), "
@@ -291,6 +317,7 @@ def resample_mask(
     original_spacing: Tuple[float, float, float],
     target_spacing: Tuple[float, float, float],
     use_gpu: bool = False,
+    max_gpu_volume_mb: float = 1000,
 ) -> np.ndarray:
     """
     Resample a binary/integer mask using nearest-neighbor interpolation.
@@ -300,11 +327,19 @@ def resample_mask(
         original_spacing: Original voxel spacing
         target_spacing: Target voxel spacing
         use_gpu: Whether to use GPU resampling
+        max_gpu_volume_mb: Maximum mask size (MB) allowed for GPU resampling
         
     Returns:
         Resampled mask
     """
-    if use_gpu:
+    # Check mask size to avoid GPU timeout on large masks
+    mask_size_mb = mask.nbytes / (1024 * 1024)
+    use_gpu_actual = bool(use_gpu) and mask_size_mb <= max_gpu_volume_mb
+    
+    if use_gpu and not use_gpu_actual:
+        logger.info(f"    Mask too large for GPU ({mask_size_mb:.1f} MB > {max_gpu_volume_mb} MB), using CPU")
+    
+    if use_gpu_actual:
         try:
             return resample_volume_gpu(
                 mask.astype(np.float32),
@@ -315,8 +350,8 @@ def resample_mask(
                 cval=0.0,
                 preserve_range=True,
             ).astype(mask.dtype)
-        except ImportError:
-            pass
+        except (ImportError, Exception) as e:
+            logger.warning(f"    GPU mask resampling failed ({e}), falling back to CPU")
     
     return resample_volume(
         mask.astype(np.float32),
@@ -762,6 +797,7 @@ def main(cfg: DictConfig) -> None:
             
             # Resample masks to match preprocessed volume
             target_spacing = tuple(cfg.preprocessing.resampling.target_spacing)
+            max_gpu_volume_mb = getattr(cfg.preprocessing.resampling, "max_gpu_volume_mb", 1000)
             logger.info("  Resampling masks...")
             
             tissue_mask = resample_mask(
@@ -769,6 +805,7 @@ def main(cfg: DictConfig) -> None:
                 original_spacing,
                 target_spacing,
                 use_gpu=cfg.preprocessing.resampling.use_gpu,
+                max_gpu_volume_mb=max_gpu_volume_mb,
             )
             
             invasion_mask = resample_mask(
@@ -776,6 +813,7 @@ def main(cfg: DictConfig) -> None:
                 original_spacing,
                 target_spacing,
                 use_gpu=cfg.preprocessing.resampling.use_gpu,
+                max_gpu_volume_mb=max_gpu_volume_mb,
             )
             
             # Extract and filter patches

@@ -7,7 +7,7 @@ defaults:
 # Paths configuration
 paths:
   # Input directories
-  data_dir: "K:/499-ProjectData/2025/P25-0048_Thyroid_Recurrence/04-Processed_Datasets/test_dataset"
+  data_dir: "K:/499-ProjectData/2025/P25-0048_Thyroid_Recurrence/04-Processed_Datasets/split_cleared_dataset"
   resolution_csv: "K:/499-ProjectData/2025/P25-0048_Thyroid_Recurrence/02-CI_VI_Segmentation/data/resolutions.csv"
   
   # Output directory for embeddings
@@ -48,6 +48,9 @@ preprocessing:
     cval: 0.0
     preserve_range: true
     use_gpu: true  # Set to false to use CPU (scipy)
+    # Maximum volume size (MB) allowed for GPU resampling. Volumes larger than this
+    # will fall back to CPU resampling to avoid GPU timeouts on some platforms (e.g., Windows TDR).
+    max_gpu_volume_mb: 1500
   
   # Patch extraction
   patching:
