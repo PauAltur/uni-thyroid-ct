@@ -497,8 +497,37 @@ def load_uni_model(cfg: DictConfig) -> Tuple[torch.nn.Module, callable]:
     # Load model
     logger.info(f"Loading UNI model: {cfg.model.name}")
     
-    device = torch.device(cfg.model.device if torch.cuda.is_available() else "cpu")
-    
+    # Determine device and multi-GPU settings
+    # cfg.model.gpus can be an int (number of GPUs), -1 or 'auto' to use all GPUs,
+    # 0 or 'cpu' to force CPU. If not set, fall back to cfg.model.device.
+    requested_gpus = getattr(cfg.model, "gpus", None)
+    cuda_available = torch.cuda.is_available()
+
+    num_requested = None
+    if requested_gpus is None:
+        # No explicit GPUs requested - respect cfg.model.device
+        if cuda_available and str(cfg.model.device).startswith("cuda"):
+            num_requested = 1
+        else:
+            num_requested = 0
+    else:
+        # Interpret requested_gpus (could be OmegaConf type)
+        try:
+            if isinstance(requested_gpus, str) and requested_gpus.lower() in ("auto", "-1"):
+                num_requested = -1
+            else:
+                num_requested = int(requested_gpus)
+        except Exception:
+            # Fallback: if can't parse, default to 1 when CUDA available
+            num_requested = 1 if cuda_available else 0
+
+    if not cuda_available or num_requested == 0:
+        device = torch.device("cpu")
+        num_requested = 0
+    else:
+        # At least one CUDA device will be used; primary device is cuda:0
+        device = torch.device("cuda:0")
+
     # UNI2-h specific kwargs
     timm_kwargs = {
         'img_size': 224, 
@@ -521,14 +550,36 @@ def load_uni_model(cfg: DictConfig) -> Tuple[torch.nn.Module, callable]:
         pretrained=cfg.model.pretrained,
         **timm_kwargs
     )
-    model = model.to(device)
-    model.eval()
-    
-    # Get preprocessing transform
+
+    # Save embedding dimension and get preprocessing transform BEFORE any DataParallel wrapping
+    embedding_dim = model.num_features
+
+    # Get preprocessing transform using the base model (has pretrained_cfg)
     transform = create_transform(**resolve_data_config(model.pretrained_cfg, model=model))
-    
+
+    # Move model to primary device
+    model = model.to(device)
+
+    # Wrap model in DataParallel if multiple GPUs requested and available
+    if num_requested is not None and num_requested != 0:
+        available = torch.cuda.device_count()
+        if num_requested == -1:
+            use_n = available
+        else:
+            use_n = min(max(1, num_requested), available)
+
+        if use_n > 1:
+            try:
+                device_ids = list(range(use_n))
+                model = torch.nn.DataParallel(model, device_ids=device_ids)
+                logger.info(f"Wrapped model with DataParallel on device_ids={device_ids}")
+            except Exception as e:
+                logger.warning(f"Failed to enable DataParallel ({e}), continuing with single device")
+
+    model.eval()
+
     logger.info(f"Model loaded on {device}")
-    logger.info(f"Embedding dimension: {model.num_features}")
+    logger.info(f"Embedding dimension: {embedding_dim}")
     
     return model, transform
 

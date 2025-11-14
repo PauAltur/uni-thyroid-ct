@@ -75,6 +75,10 @@ model:
   pretrained: true
   batch_size: 32  # Number of patches to process at once
   device: "cuda"  # or "cpu"
+  # Number of GPUs to use for inference. Set to 1 for single-GPU, >1 to enable
+  # DataParallel across the first N CUDA devices. Set to 0 or "cpu" to force CPU.
+  # If set to -1 or "auto", uses all available CUDA devices.
+  gpus: 2
   
   # Hugging Face login (if needed)
   hf_token_file: "./hf_token.txt"  # Path to token file, or null if not needed

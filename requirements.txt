@@ -19,8 +19,8 @@ tifffile
 timm
 tqdm
 --extra-index-url https://download.pytorch.org/whl/cu118
-torch
-torchvision
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118
 
 # Optional: GPU acceleration for resampling (5-20x faster)
 # Uncomment the line below if you have an NVIDIA GPU with CUDA
