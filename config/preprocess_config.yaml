@@ -62,7 +62,7 @@ preprocessing:
   
   # Tissue filtering
   tissue_filter:
-    min_tissue_percentage: 0.0  # Keep patches with any tissue (>0%). Adjust as needed (e.g., 10.0 for >10%)
+    min_tissue_percentage: 0.01  # Keep patches with >0% tissue (0.01 ensures non-zero). Adjust as needed (e.g., 10.0 for >10%)
   
   # RGB conversion (automatic - just stacks grayscale 3 times)
   rgb_conversion:
