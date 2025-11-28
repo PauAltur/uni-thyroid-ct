@@ -7,7 +7,7 @@ to sample-level for more robust classification.
 
 import numpy as np
 import pandas as pd
-from typing import Tuple, Dict
+from typing import Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ def aggregate_embeddings_by_sample(
     
     # Log statistics
     unique_labels = np.unique(sample_labels)
-    logger.info(f"Sample-level aggregation complete:")
+    logger.info("Sample-level aggregation complete:")
     logger.info(f"  Total samples: {n_samples}")
     logger.info(f"  Label distribution: {dict(zip(*np.unique(sample_labels, return_counts=True)))}")
     

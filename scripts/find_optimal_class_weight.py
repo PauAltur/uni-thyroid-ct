@@ -14,7 +14,6 @@ import logging
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix
@@ -59,7 +58,7 @@ def evaluate_class_weight(
     y_prob_pos = y_prob[:, 1]
     try:
         auc = roc_auc_score(y_test, y_prob_pos)
-    except:
+    except:  # noqa: E722
         auc = 0.0
     
     # Confusion matrix
