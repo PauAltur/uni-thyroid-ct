@@ -99,6 +99,36 @@ logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR
   log_file: null  # Set path to save logs to file, or null for console only
 
+# MLflow settings
+mlflow:
+  # Enable MLflow tracking
+  enabled: true
+  
+  # Experiment name in MLflow
+  experiment_name: "thyroid_classification"
+  
+  # MLflow tracking URI (null = local mlruns directory)
+  # For local server: "http://127.0.0.1:5000"
+  # For remote server: "http://your-mlflow-server:5000"
+  tracking_uri: null
+  
+  # Artifact location (null = default location)
+  artifact_location: null
+  
+  # Run name (null = auto-generated)
+  run_name: null
+  
+  # Additional tags for the run
+  tags:
+    project: "thyroid-ct-classification"
+    model_type: "${model.type}"
+  
+  # What to log
+  log_models: true
+  log_confusion_matrix: true
+  log_predictions: true
+  log_artifacts: true
+
 # Runtime settings
 runtime:
   random_seed: 42

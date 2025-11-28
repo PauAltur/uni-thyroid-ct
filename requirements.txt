@@ -6,6 +6,7 @@ ipywidgets
 ipython
 ipykernel
 matplotlib
+mlflow
 numpy
 pandas
 pillow

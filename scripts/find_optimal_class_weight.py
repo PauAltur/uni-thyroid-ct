@@ -18,11 +18,16 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix
 )
+import mlflow
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from data_loader import load_embeddings_from_h5, prepare_classification_data
+from mlflow_utils import (
+    setup_mlflow, start_mlflow_run, end_mlflow_run,
+    log_data_statistics, get_mlflow_ui_command
+)
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -98,6 +103,25 @@ def main():
     min_tissue_percentage = 0.01
     random_state = 42
     
+    # MLflow configuration
+    use_mlflow = True  # Set to False to disable MLflow tracking
+    mlflow_experiment_name = "thyroid_class_weight_tuning"
+    
+    # Setup MLflow if enabled
+    if use_mlflow:
+        try:
+            logger.info("\nSetting up MLflow tracking...")
+            setup_mlflow(
+                experiment_name=mlflow_experiment_name,
+                tracking_uri=None,  # Use local tracking
+            )
+            logger.info(f"MLflow experiment: {mlflow_experiment_name}")
+            logger.info(get_mlflow_ui_command())
+        except Exception as e:
+            logger.warning(f"Failed to initialize MLflow: {e}")
+            logger.warning("Continuing without MLflow tracking...")
+            use_mlflow = False
+    
     # Load data
     logger.info("\nLoading data...")
     embeddings, metadata = load_embeddings_from_h5(
@@ -113,6 +137,16 @@ def main():
         label_column=label_column,
         sample_column=sample_column,
     )
+    
+    # Log data statistics to MLflow
+    if use_mlflow:
+        try:
+            start_mlflow_run(run_name="class_weight_exploration")
+            log_data_statistics(X, y, groups)
+            mlflow.log_param("min_tissue_percentage", min_tissue_percentage)
+            mlflow.log_param("random_state", random_state)
+        except Exception as e:
+            logger.warning(f"Error logging to MLflow: {e}")
     
     # Use a manageable subset for faster testing
     # Sample 100k patches to speed up
@@ -150,6 +184,18 @@ def main():
         logger.info(f"\nTesting class_weight={{0: 1, 1: {ratio}}}...")
         result = evaluate_class_weight(X_train, y_train, X_test, y_test, ratio, random_state)
         results.append(result)
+        
+        # Log to MLflow
+        if use_mlflow:
+            try:
+                mlflow.log_metric(f"accuracy_weight_{ratio}", result['accuracy'])
+                mlflow.log_metric(f"precision_weight_{ratio}", result['precision'])
+                mlflow.log_metric(f"recall_weight_{ratio}", result['recall'])
+                mlflow.log_metric(f"f1_weight_{ratio}", result['f1'])
+                mlflow.log_metric(f"specificity_weight_{ratio}", result['specificity'])
+                mlflow.log_metric(f"auc_roc_weight_{ratio}", result['auc_roc'])
+            except Exception as e:
+                logger.warning(f"Error logging metrics to MLflow: {e}")
         
         logger.info(f"  Accuracy:    {result['accuracy']:.4f} (baseline: {result['baseline_acc']:.4f})")
         logger.info(f"  Precision:   {result['precision']:.4f}")
@@ -191,6 +237,44 @@ def main():
     logger.info(f"  Recall:      {best_balanced['recall']:.4f}")
     logger.info(f"  F1:          {best_balanced['f1']:.4f}")
     logger.info(f"  AUC-ROC:     {best_balanced['auc_roc']:.4f}")
+    
+    # Log best configuration to MLflow
+    if use_mlflow:
+        try:
+            mlflow.log_metric("best_class_weight_ratio", best_balanced['class_weight_ratio'])
+            mlflow.log_metric("best_accuracy", best_balanced['accuracy'])
+            mlflow.log_metric("best_precision", best_balanced['precision'])
+            mlflow.log_metric("best_recall", best_balanced['recall'])
+            mlflow.log_metric("best_f1", best_balanced['f1'])
+            mlflow.log_metric("best_auc_roc", best_balanced['auc_roc'])
+            
+            # Save recommendation as artifact
+            recommendation_text = f"""Class Weight Recommendation
+==========================================
+Recommended class_weight: {{0: 1, 1: {best_balanced['class_weight_ratio']}}}
+
+Performance Metrics:
+  Accuracy:    {best_balanced['accuracy']:.4f}
+  Precision:   {best_balanced['precision']:.4f}
+  Recall:      {best_balanced['recall']:.4f}
+  F1:          {best_balanced['f1']:.4f}
+  Specificity: {best_balanced['specificity']:.4f}
+  AUC-ROC:     {best_balanced['auc_roc']:.4f}
+
+Configuration for YAML:
+  class_weight: {{0: 1, 1: {best_balanced['class_weight_ratio']}}}
+"""
+            mlflow.log_text(recommendation_text, "recommendation.txt")
+            
+            end_mlflow_run(status="FINISHED")
+            logger.info(f"\nMLflow tracking complete. {get_mlflow_ui_command()}")
+        except Exception as e:
+            logger.warning(f"Error finalizing MLflow: {e}")
+            if use_mlflow:
+                try:
+                    end_mlflow_run(status="FINISHED")
+                except:  # noqa: E722
+                    pass
     
     logger.info("\n" + "=" * 80)
     logger.info("Update your config with the recommended class_weight:")

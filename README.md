@@ -29,7 +29,14 @@ python tests/test_setup.py
 # 4. Run pipeline
 python scripts/preprocess_pipeline.py
 
-# 5. Open analysis notebook
+# 5. Train classifier with MLflow tracking
+python scripts/train_classifier.py
+
+# 6. View results in MLflow UI
+python scripts/launch_mlflow_ui.py
+# Or: mlflow ui
+
+# 7. Open analysis notebook
 # notebooks/03-analyze-embeddings.ipynb
 ```
 
@@ -94,6 +101,14 @@ Each patch includes:
 - Tissue percentage
 - Invasion presence and type (0-4)
 - Invasion percentage
+
+### ✅ MLflow Experiment Tracking
+- Track all experiments automatically
+- Compare runs and hyperparameters
+- Store models with metrics
+- Visualize results in web interface
+- Share results via local/remote server
+- See [`docs/MLFLOW_GUIDE.md`](docs/MLFLOW_GUIDE.md) for details
 
 ### ✅ Cache Management
 - HuggingFace cache: configurable
@@ -214,6 +229,8 @@ pytest tests/test_preprocessing.py -v
 - **[IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)**: Complete overview and quick start
 - **[SETUP_GUIDE.md](SETUP_GUIDE.md)**: Detailed setup instructions
 - **[PIPELINE_README.md](PIPELINE_README.md)**: Pipeline documentation and troubleshooting
+- **[docs/MLFLOW_GUIDE.md](docs/MLFLOW_GUIDE.md)**: MLflow experiment tracking guide
+- **[docs/MLFLOW_INTEGRATION_SUMMARY.md](docs/MLFLOW_INTEGRATION_SUMMARY.md)**: Quick MLflow integration overview
 - **Notebooks**: Interactive examples and visualizations
 
 ## 🐛 Troubleshooting

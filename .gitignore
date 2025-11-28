@@ -19,3 +19,6 @@ hf_token.txt
 
 # output files
 outputs/
+
+# mlflow files
+mlruns/
