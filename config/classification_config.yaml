@@ -1,0 +1,105 @@
+# Configuration for classification training pipeline
+# This config uses Hydra for structured configuration management
+
+defaults:
+  - _self_
+
+# Paths configuration
+paths:
+  # Input H5 file with embeddings and metadata
+  embeddings_h5: "t:/users/altp/data/embeddings/thyroid_embeddings.h5"
+  
+  # Output directory for results
+  output_dir: "t:/users/altp/outputs/classification"
+  
+  # Experiment name (used for output filenames)
+  experiment_name: "cv_results_logistic"
+
+# Data loading settings
+data:
+  # Keys in the H5 file
+  embeddings_key: "embeddings"
+  label_column: "has_invasion"  # Column name for the target variable
+  sample_column: "sample_codes"  # Column name for sample identifiers (for grouping)
+  
+  # Metadata fields to load (null = load all available)
+  metadata_keys: null
+  
+  # Tissue filtering
+  min_tissue_percentage: 0.01  # Minimum tissue percentage to include patch (0-100)
+  
+  # Sample-level aggregation (for sample-level training script)
+  aggregation_method: "mean"  # Options: "mean", "max", "median"
+
+# Cross-validation settings
+cross_validation:
+  n_folds: 5
+  shuffle: true
+  random_state: 42
+  stratified: false  # Use stratified group k-fold (experimental)
+
+# Model settings
+model:
+  # Classifier type: 'logistic', 'random_forest', 'svm'
+  type: "logistic"
+  
+  # Hyperparameters (specific to classifier type)
+  params:
+    # Logistic Regression
+    max_iter: 1000
+    solver: "lbfgs"
+    C: 1.0
+    # Options for class_weight:
+    # null: no weighting (will predict mostly class 0)
+    # "balanced": automatic balancing (current issue - over-predicts class 1)
+    # Custom dict like {0: 1, 1: 5}: manual control (recommended)
+    class_weight: {0: 1, 1: 5}  # Start with 5x weight for minority class
+    
+    # Random Forest (uncomment if using)
+    # n_estimators: 100
+    # max_depth: null
+    # min_samples_split: 2
+    
+    # SVM (uncomment if using)
+    # kernel: "rbf"
+    # C: 1.0
+    # gamma: "scale"
+
+# Metrics settings
+metrics:
+  # Compute these metrics
+  compute_auc: true
+  compute_confusion_matrix: true
+  
+  # Average method for multiclass ('binary', 'micro', 'macro', 'weighted')
+  average: "binary"
+  
+  # Positive class label (for binary classification)
+  pos_label: 1
+
+# Output settings
+output:
+  # Save CV results to CSV
+  save_cv_results: true
+  csv_filename: "cv_results_logistic_k5_tissue0.1_folds.csv"
+  
+  # Save trained models
+  save_models: false
+  models_dir: "models"
+  
+  # Save predictions
+  save_predictions: false
+  predictions_filename: "cv_predictions.csv"
+  
+  # Verbosity
+  log_fold_details: true
+
+# Logging settings
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  log_file: null  # Set path to save logs to file, or null for console only
+
+# Runtime settings
+runtime:
+  random_seed: 42
+  n_jobs: -1  # Number of parallel jobs (-1 = use all cores)
