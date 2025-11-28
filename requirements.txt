@@ -15,6 +15,7 @@ pytest
 pyyaml
 scipy
 scikit-learn
+seaborn
 tifffile
 timm
 tqdm
