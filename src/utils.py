@@ -93,7 +93,7 @@ def get_data_path(config_path: Optional[str] = None, set_env: bool = True) -> Pa
     if matched_path is None:
         default_path = config.get('default_path')
         if default_path:
-            print(f"⚠ No exact match found. Using default path.")
+            print("⚠ No exact match found. Using default path.")
             matched_path = default_path
         else:
             raise ValueError(
@@ -109,7 +109,7 @@ def get_data_path(config_path: Optional[str] = None, set_env: bool = True) -> Pa
     # Optionally set environment variable
     if set_env:
         os.environ['DATA_PATH'] = str(data_path_obj)
-        print(f"✓ Set DATA_PATH environment variable")
+        print("✓ Set DATA_PATH environment variable")
     
     # Warn if path doesn't exist
     if not data_path_obj.exists():
@@ -175,7 +175,7 @@ if __name__ == "__main__":
         print(f"✓ Environment variable DATA_PATH: {os.environ.get('DATA_PATH')}")
         
         if data_path.exists():
-            print(f"✓ Path exists and is accessible")
+            print("✓ Path exists and is accessible")
             # List some files as a test
             files = list(data_path.glob("*.tif"))[:5]
             if files:
